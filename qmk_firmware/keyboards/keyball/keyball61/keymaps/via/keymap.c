@@ -95,6 +95,52 @@ report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
 }
 // ------------------------------------------------------------------------
 
+// --- スクロールの加速 / expo ----------------------------------------------
+// Keyball純正のスクロール変換フックを上書きし、生のボール移動量にカーブを掛ける。
+// ゆっくり回す=1ノッチ精密、速く回す=一気にスクロール（加速）。端数はキャリーで保持。
+// 分割(左右)・スクロールスナップ(縦/横ロック)は純正どおり維持。
+#define SCRL_DIV     48   // 基本の重さ（大きいほどゆっくり=精密）
+#define SCRL_MAX    400   // 速いスピン時の最大倍率 ×100（100=加速なし, 400=最大4倍）
+#define SCRL_REF     16   // 「全速スピン」とみなす1レポートの生移動量（小さいほど早く最大加速）
+
+static int32_t scrl_acc_h, scrl_acc_v;
+
+static int32_t scrl_scale(int16_t mv) {           // 返り値は ×256 固定小数
+    int16_t a = mv < 0 ? -mv : mv;
+    if (a > 255) a = 255;                          // 桁あふれ防止（速い動きは頭打ち）
+    int32_t ip   = a < SCRL_REF ? a : SCRL_REF;    // i/REF を 1.0 で頭打ち
+    int32_t gain = 100 + (int32_t)(SCRL_MAX - 100) * ip * ip / ((int32_t)SCRL_REF * SCRL_REF);
+    int32_t out  = (int32_t)a * gain * 256 / 100 / SCRL_DIV;
+    return mv < 0 ? -out : out;
+}
+
+static int8_t scrl_emit(int32_t scaled, int32_t *acc) {
+    *acc += scaled;
+    int32_t w = *acc / 256;
+    *acc -= w * 256;                               // 端数を次回へ持ち越し
+    if (w >  127) w =  127;
+    if (w < -127) w = -127;
+    return (int8_t)w;
+}
+
+void keyball_on_apply_motion_to_mouse_scroll(keyball_motion_t *m, report_mouse_t *r, bool is_left) {
+    if (m->x == 0 && m->y == 0) { r->h = 0; r->v = 0; return; }
+    int32_t sh =  scrl_scale(m->y);               // Keyball61: h <- y, v <- -x
+    int32_t sv = -scrl_scale(m->x);
+    m->x = 0; m->y = 0;                            // 生移動量を消費（端数は自前のキャリーで保持）
+    int8_t h = scrl_emit(sh, &scrl_acc_h);
+    int8_t v = scrl_emit(sv, &scrl_acc_v);
+    if (is_left) { h = -h; v = -v; }
+    r->h = h;
+    r->v = v;
+    switch (keyball_get_scrollsnap_mode()) {       // スナップ（縦/横ロック）を純正どおり維持
+        case KEYBALL_SCROLLSNAP_MODE_VERTICAL:   r->h = 0; break;
+        case KEYBALL_SCROLLSNAP_MODE_HORIZONTAL: r->v = 0; break;
+        default: break;
+    }
+}
+// ------------------------------------------------------------------------
+
 // clang-format off
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   [0] = LAYOUT_universal(
