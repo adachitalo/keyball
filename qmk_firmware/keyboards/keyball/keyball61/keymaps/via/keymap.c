@@ -20,6 +20,30 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "quantum.h"
 
+// --- 押下中だけ低CPI（精密モード） ---------------------------------------
+enum custom_keycodes {
+    CPI_PREC = KEYBALL_SAFE_RANGE,   // 押下中だけ低CPIにする精密モードキー（= VIA USER00 / 0x7E40）
+};
+
+#define PRECISION_CPI 4              // 押下中のCPI（×100単位 → 4 = 400CPI）
+
+static uint8_t saved_cpi = 0;
+
+bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+    switch (keycode) {
+        case CPI_PREC:
+            if (record->event.pressed) {
+                saved_cpi = keyball_get_cpi();   // 現在のCPIを退避
+                keyball_set_cpi(PRECISION_CPI);  // 精密モードへ
+            } else {
+                keyball_set_cpi(saved_cpi);      // 離したら元のCPIへ復帰
+            }
+            return false;
+    }
+    return true;
+}
+// ------------------------------------------------------------------------
+
 // clang-format off
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   [0] = LAYOUT_universal(
