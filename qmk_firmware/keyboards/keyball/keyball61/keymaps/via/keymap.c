@@ -55,20 +55,20 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 // 数字は感覚で調整可。変更したら再ビルドするだけ。
 // ※ floatは使わない（ATmega32U4はフラッシュが厳しいため整数のみで計算）。
 
-#define SPEED_PCT    33   // 速度係数(縮小率) ×100。CPIを3倍にしたなら33で従来比≒等速。下げると遅く=精密
-#define EXPO_MAX    100   // 高速時の追加倍率 ×100（100=加速なし/最高速を抑える, 100超で速い動きを加速）
-#define EXPO_CURVE    3   // expoカーブの鋭さ（整数: 2 or 3。EXPO_MAX>100のとき有効）
-#define EXPO_REF     40   // 「全速」とみなす1レポートあたりの移動量
+#define SPEED_PCT    33   // 速度係数(縮小率) ×100。低速の基準速度。下げると全体的に遅く=精密
+#define EXPO_MAX    250   // 高速時の追加倍率 ×100（100=加速なし, 250=速い動きで最大2.5倍に加速）
+#define EXPO_CURVE    3   // expoカーブの鋭さ（整数: 2=穏やか / 3=中央が鈍くexpo風）
+#define EXPO_REF     40   // 「全速」とみなす1レポートの移動量（小さいほど早く最大加速に到達）
 
 static uint32_t expo_lut[128];   // a×expoゲイン ×256（unityスケール）
 static int32_t  carry_x, carry_y;
 
-// 動き始めランプ：トラックボールの"周り始めの硬さ"で出る初動スパイクを抑える。
-// 停止→動き出しの最初だけゲインを絞り、ONSET_STEPS かけて通常へ戻す。
-#define ONSET_STEPS  6    // 立ち上がりにかける報告数（大=動き始めを長く抑える）
-#define ONSET_MIN   30    // 動き始めの倍率 ×100（小さいほど初動を強く抑える, 100=ランプ無効）
-#define ONSET_IDLE   3    // 何報告連続で停止したらランプ再武装するか
-static uint8_t onset_ramp, idle_cnt;
+// 動き始めランプ（時間ベース）：トラックボールの"周り始めの硬さ"で出る初動スパイクを抑える。
+// 停止→動き出しの最初だけゲインを絞り、ONSET_MS かけて通常へ戻す。報告レートに依らず一定時間。
+#define ONSET_MS    120   // 動き始めにこの時間[ms]かけて通常ゲインへ立ち上げる（大=ゆっくり立上り）
+#define ONSET_MIN    25   // 動き始めの倍率 ×100（小さいほど初動を強く抑える, 100=ランプ無効）
+#define ONSET_GAP_MS 80   // この時間[ms]以上停止したら「動き始め」とみなしランプ再武装
+static uint32_t onset_start, onset_last;
 
 void keyboard_post_init_user(void) {
     uint32_t ref_pow = 1;
@@ -95,66 +95,21 @@ static int16_t speed_axis(int16_t v, int32_t *carry, int16_t rgain) {
 }
 
 report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
-    if (!keyball_get_scroll_mode()) {        // スクロール中は適用しない
-        // 動き始めランプの更新（両軸まとめて判定）
-        if (mouse_report.x == 0 && mouse_report.y == 0) {
-            if (idle_cnt < 255) idle_cnt++;
-            if (idle_cnt >= ONSET_IDLE) onset_ramp = 0;   // 停止 → 次の動き始めを抑える
-        } else {
-            idle_cnt = 0;
-            if (onset_ramp < ONSET_STEPS) onset_ramp++;
+    // ※OLEDの「Ball:」行 x/y はこの変換の"前"の値＝ほぼ生のセンサー移動量。実測に使える。
+    if (!keyball_get_scroll_mode()) {        // スクロール中はポインター曲線は適用しない（スクロールは純正）
+        int16_t rgain = 100;
+        if (mouse_report.x != 0 || mouse_report.y != 0) {
+            uint32_t now = timer_read32();
+            if (TIMER_DIFF_32(now, onset_last) > ONSET_GAP_MS) onset_start = now;  // 久々の動き=立上り開始
+            onset_last = now;
+            uint32_t since = TIMER_DIFF_32(now, onset_start);
+            if (since > ONSET_MS) since = ONSET_MS;
+            rgain = ONSET_MIN + (int32_t)(100 - ONSET_MIN) * since / ONSET_MS;
         }
-        int16_t rgain = ONSET_MIN + (100 - ONSET_MIN) * onset_ramp / ONSET_STEPS;
         mouse_report.x = speed_axis(mouse_report.x, &carry_x, rgain);
         mouse_report.y = speed_axis(mouse_report.y, &carry_y, rgain);
     }
     return mouse_report;
-}
-// ------------------------------------------------------------------------
-
-// --- スクロールの加速 / expo ----------------------------------------------
-// Keyball純正のスクロール変換フックを上書きし、生のボール移動量にカーブを掛ける。
-// ゆっくり回す=1ノッチ精密、速く回す=一気にスクロール（加速）。端数はキャリーで保持。
-// 分割(左右)・スクロールスナップ(縦/横ロック)は純正どおり維持。
-#define SCRL_DIV     48   // 基本の重さ（大きいほどゆっくり=精密）
-#define SCRL_MAX    400   // 速いスピン時の最大倍率 ×100（100=加速なし, 400=最大4倍）
-#define SCRL_REF     16   // 「全速スピン」とみなす1レポートの生移動量（小さいほど早く最大加速）
-
-static int32_t scrl_acc_h, scrl_acc_v;
-
-static int32_t scrl_scale(int16_t mv) {           // 返り値は ×256 固定小数
-    int16_t a = mv < 0 ? -mv : mv;
-    if (a > 255) a = 255;                          // 桁あふれ防止（速い動きは頭打ち）
-    int32_t ip   = a < SCRL_REF ? a : SCRL_REF;    // i/REF を 1.0 で頭打ち
-    int32_t gain = 100 + (int32_t)(SCRL_MAX - 100) * ip * ip / ((int32_t)SCRL_REF * SCRL_REF);
-    int32_t out  = (int32_t)a * gain * 256 / 100 / SCRL_DIV;
-    return mv < 0 ? -out : out;
-}
-
-static int8_t scrl_emit(int32_t scaled, int32_t *acc) {
-    *acc += scaled;
-    int32_t w = *acc / 256;
-    *acc -= w * 256;                               // 端数を次回へ持ち越し
-    if (w >  127) w =  127;
-    if (w < -127) w = -127;
-    return (int8_t)w;
-}
-
-void keyball_on_apply_motion_to_mouse_scroll(keyball_motion_t *m, report_mouse_t *r, bool is_left) {
-    if (m->x == 0 && m->y == 0) { r->h = 0; r->v = 0; return; }
-    int32_t sh =  scrl_scale(m->y);               // Keyball61: h <- y, v <- -x
-    int32_t sv = -scrl_scale(m->x);
-    m->x = 0; m->y = 0;                            // 生移動量を消費（端数は自前のキャリーで保持）
-    int8_t h = scrl_emit(sh, &scrl_acc_h);
-    int8_t v = scrl_emit(sv, &scrl_acc_v);
-    if (is_left) { h = -h; v = -v; }
-    r->h = h;
-    r->v = v;
-    switch (keyball_get_scrollsnap_mode()) {       // スナップ（縦/横ロック）を純正どおり維持
-        case KEYBALL_SCROLLSNAP_MODE_VERTICAL:   r->h = 0; break;
-        case KEYBALL_SCROLLSNAP_MODE_HORIZONTAL: r->v = 0; break;
-        default: break;
-    }
 }
 // ------------------------------------------------------------------------
 
