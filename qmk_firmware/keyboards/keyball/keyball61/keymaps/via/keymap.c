@@ -56,9 +56,9 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 // ※ floatは使わない（ATmega32U4はフラッシュが厳しいため整数のみで計算）。
 
 #define SPEED_PCT    25   // 速度係数(縮小率) ×100。低速の基準速度。下げると全体的に遅く=精密
-#define EXPO_MAX    500   // 高速時の追加倍率 ×100（100=加速なし, 500=速い動きで最大5倍に加速）
+#define EXPO_MAX   2000   // 高速時のexpoゲイン ×100（実効最大 = SPEED_PCT×EXPO_MAX/100 = 0.25×20 = 5倍）
 #define EXPO_CURVE    3   // expoカーブの鋭さ（整数: 2=穏やか / 3=中央が鈍くexpo風）
-#define EXPO_REF     40   // 「全速」とみなす1レポートの移動量（小さいほど早く最大加速に到達）
+#define EXPO_REF     80   // 「全速」とみなす1レポートの移動量（小さいほど早く最大加速に到達）
 
 static uint32_t expo_lut[128];   // a×expoゲイン ×256（unityスケール）
 static int32_t  carry_x, carry_y;
