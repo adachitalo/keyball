@@ -74,9 +74,8 @@ void keyboard_post_init_user(void) {
 
 static int16_t speed_axis(int16_t v, int32_t *carry) {
     int16_t a = v < 0 ? -v : v;
-    int64_t base256 = (a < 128) ? (int64_t)expo_lut[a]
-                                : ((int64_t)a * EXPO_MAX * 256) / 100;
-    int32_t out256 = (int32_t)(base256 * SPEED_PCT / 100);   // 縮小係数を適用
+    if (a > 127) a = 127;                    // 拡張レポートの大入力は上限で頭打ち（64bit回避＝省フラッシュ）
+    int32_t out256 = (int32_t)expo_lut[a] * SPEED_PCT / 100;   // 縮小係数を適用
     if (v < 0) out256 = -out256;
     *carry += out256;                       // 端数を蓄積
     int16_t whole = (int16_t)(*carry / 256);
