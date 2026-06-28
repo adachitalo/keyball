@@ -63,6 +63,13 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 static uint32_t expo_lut[128];   // a×expoゲイン ×256（unityスケール）
 static int32_t  carry_x, carry_y;
 
+// 動き始めランプ：トラックボールの"周り始めの硬さ"で出る初動スパイクを抑える。
+// 停止→動き出しの最初だけゲインを絞り、ONSET_STEPS かけて通常へ戻す。
+#define ONSET_STEPS  6    // 立ち上がりにかける報告数（大=動き始めを長く抑える）
+#define ONSET_MIN   30    // 動き始めの倍率 ×100（小さいほど初動を強く抑える, 100=ランプ無効）
+#define ONSET_IDLE   3    // 何報告連続で停止したらランプ再武装するか
+static uint8_t onset_ramp, idle_cnt;
+
 void keyboard_post_init_user(void) {
     uint32_t ref_pow = 1;
     for (uint8_t c = 0; c < EXPO_CURVE; c++) ref_pow *= EXPO_REF;
@@ -75,10 +82,11 @@ void keyboard_post_init_user(void) {
     }
 }
 
-static int16_t speed_axis(int16_t v, int32_t *carry) {
+static int16_t speed_axis(int16_t v, int32_t *carry, int16_t rgain) {
     int16_t a = v < 0 ? -v : v;
     if (a > 127) a = 127;                    // 拡張レポートの大入力は上限で頭打ち（64bit回避＝省フラッシュ）
     int32_t out256 = (int32_t)expo_lut[a] * SPEED_PCT / 100;   // 縮小係数を適用
+    out256 = out256 * rgain / 100;          // 動き始めランプ（初動スパイク抑制）
     if (v < 0) out256 = -out256;
     *carry += out256;                       // 端数を蓄積
     int16_t whole = (int16_t)(*carry / 256);
@@ -88,8 +96,17 @@ static int16_t speed_axis(int16_t v, int32_t *carry) {
 
 report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
     if (!keyball_get_scroll_mode()) {        // スクロール中は適用しない
-        mouse_report.x = speed_axis(mouse_report.x, &carry_x);
-        mouse_report.y = speed_axis(mouse_report.y, &carry_y);
+        // 動き始めランプの更新（両軸まとめて判定）
+        if (mouse_report.x == 0 && mouse_report.y == 0) {
+            if (idle_cnt < 255) idle_cnt++;
+            if (idle_cnt >= ONSET_IDLE) onset_ramp = 0;   // 停止 → 次の動き始めを抑える
+        } else {
+            idle_cnt = 0;
+            if (onset_ramp < ONSET_STEPS) onset_ramp++;
+        }
+        int16_t rgain = ONSET_MIN + (100 - ONSET_MIN) * onset_ramp / ONSET_STEPS;
+        mouse_report.x = speed_axis(mouse_report.x, &carry_x, rgain);
+        mouse_report.y = speed_axis(mouse_report.y, &carry_y, rgain);
     }
     return mouse_report;
 }
