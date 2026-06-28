@@ -53,22 +53,25 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 //    → 同じ速度でも高解像度ぶん滑らかで細かく狙える。
 //  - EXPO_MAX を 100 超にすると、速い動きだけ追加で加速（任意・既定はOFF）。
 // 数字は感覚で調整可。変更したら再ビルドするだけ。
-#include <math.h>
+// ※ floatは使わない（ATmega32U4はフラッシュが厳しいため整数のみで計算）。
 
 #define SPEED_PCT    33   // 速度係数(縮小率) ×100。CPIを3倍にしたなら33で従来比≒等速。下げると遅く=精密
-#define EXPO_MAX    100   // 高速時の追加倍率 ×100（100=加速なし/最高速を抑える, 上げると速い動きを加速）
-#define EXPO_CURVE    3   // expoカーブの鋭さ（EXPO_MAX>100のとき有効）
+#define EXPO_MAX    100   // 高速時の追加倍率 ×100（100=加速なし/最高速を抑える, 100超で速い動きを加速）
+#define EXPO_CURVE    3   // expoカーブの鋭さ（整数: 2 or 3。EXPO_MAX>100のとき有効）
 #define EXPO_REF     40   // 「全速」とみなす1レポートあたりの移動量
 
 static uint32_t expo_lut[128];   // a×expoゲイン ×256（unityスケール）
 static int32_t  carry_x, carry_y;
 
 void keyboard_post_init_user(void) {
+    uint32_t ref_pow = 1;
+    for (uint8_t c = 0; c < EXPO_CURVE; c++) ref_pow *= EXPO_REF;
     for (uint16_t i = 0; i < 128; i++) {
-        float t = (float)i / (float)EXPO_REF;
-        if (t > 1.0f) t = 1.0f;
-        float gain = 100.0f + ((float)EXPO_MAX - 100.0f) * powf(t, (float)EXPO_CURVE);
-        expo_lut[i] = (uint32_t)((float)i * gain / 100.0f * 256.0f + 0.5f);
+        uint32_t ip   = (i < EXPO_REF) ? i : EXPO_REF;   // i/EXPO_REF を 1.0 で頭打ち
+        uint32_t inum = 1;
+        for (uint8_t c = 0; c < EXPO_CURVE; c++) inum *= ip;
+        uint32_t gain100 = 100 + (uint32_t)(EXPO_MAX - 100) * inum / ref_pow;  // ×100, 100=等倍
+        expo_lut[i] = (uint32_t)i * 256 * gain100 / 100;
     }
 }
 
