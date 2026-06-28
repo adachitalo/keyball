@@ -44,6 +44,44 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 }
 // ------------------------------------------------------------------------
 
+// --- ポインター・エキスポ / アクセラレーション ----------------------------
+// 1レポートあたりの移動量(delta)に非線形カーブを掛ける。
+// ゆっくり動かす(小delta)=精密、速く動かす(大delta)=加速。
+// 数字は全て感覚で調整可。変更したら再ビルドするだけ。
+#include <math.h>
+
+#define EXPO_SENS    85   // 低速時の倍率 ×100（<100=精密寄り, 100=等倍, >100=全体的に速く）
+#define EXPO_MAX    230   // 高速時の最大倍率 ×100（フリック時のゲイン）
+#define EXPO_CURVE    2   // カーブの鋭さ（2=2乗/穏やか, 3=3乗/ドローンexpo風に中央がより鈍く）
+#define EXPO_REF     36   // 「全速」とみなす1レポートあたりの移動量（小さいほど早く最大ゲインに達する）
+
+static uint16_t expo_lut[128];
+
+void keyboard_post_init_user(void) {
+    for (uint16_t i = 0; i < 128; i++) {
+        float t = (float)i / (float)EXPO_REF;
+        if (t > 1.0f) t = 1.0f;
+        float gain = (float)EXPO_SENS + ((float)EXPO_MAX - (float)EXPO_SENS) * powf(t, (float)EXPO_CURVE);
+        expo_lut[i] = (uint16_t)((float)i * gain / 100.0f + 0.5f);
+    }
+}
+
+static inline int16_t expo_apply(int16_t v) {
+    int16_t a = v < 0 ? -v : v;
+    int32_t o = (a < 128) ? expo_lut[a] : ((int32_t)a * EXPO_MAX) / 100;
+    if (o > 32767) o = 32767;
+    return v < 0 ? (int16_t)-o : (int16_t)o;
+}
+
+report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
+    if (!keyball_get_scroll_mode()) {        // スクロール中はカーブを適用しない
+        mouse_report.x = expo_apply(mouse_report.x);
+        mouse_report.y = expo_apply(mouse_report.y);
+    }
+    return mouse_report;
+}
+// ------------------------------------------------------------------------
+
 // clang-format off
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   [0] = LAYOUT_universal(
