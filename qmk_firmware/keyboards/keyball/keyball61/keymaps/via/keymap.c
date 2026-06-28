@@ -44,39 +44,50 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 }
 // ------------------------------------------------------------------------
 
-// --- ポインター・エキスポ / アクセラレーション ----------------------------
-// 1レポートあたりの移動量(delta)に非線形カーブを掛ける。
-// ゆっくり動かす(小delta)=精密、速く動かす(大delta)=加速。
-// 数字は全て感覚で調整可。変更したら再ビルドするだけ。
+// --- ポインター速度制御：高解像度(高CPI) + 縮小係数 + 端数キャリー ----------
+// 考え方：
+//  - 解像度は CPI を上げて稼ぐ（例：従来500の3倍 = 1500CPI を実機で設定する）。
+//  - その移動量にファーム側で縮小係数 SPEED_PCT を掛けてカーソル速度を決める。
+//    例: CPI3倍 × SPEED_PCT=33% ≒ 従来と同等の速度。係数を下げれば更に遅く=精密。
+//  - 縮小で出る端数は次レポートへ持ち越す（キャリー）ので低速の微小移動が消えない。
+//    → 同じ速度でも高解像度ぶん滑らかで細かく狙える。
+//  - EXPO_MAX を 100 超にすると、速い動きだけ追加で加速（任意・既定はOFF）。
+// 数字は感覚で調整可。変更したら再ビルドするだけ。
 #include <math.h>
 
-#define EXPO_SENS    65   // 低速時の倍率 ×100（<100=精密寄り, 100=等倍, >100=全体的に速く）
-#define EXPO_MAX    230   // 高速時の最大倍率 ×100（フリック時のゲイン）
-#define EXPO_CURVE    3   // カーブの鋭さ（2=2乗/穏やか, 3=3乗/ドローンexpo風に中央がより鈍く）
-#define EXPO_REF     36   // 「全速」とみなす1レポートあたりの移動量（小さいほど早く最大ゲインに達する）
+#define SPEED_PCT    33   // 速度係数(縮小率) ×100。CPIを3倍にしたなら33で従来比≒等速。下げると遅く=精密
+#define EXPO_MAX    100   // 高速時の追加倍率 ×100（100=加速なし/最高速を抑える, 上げると速い動きを加速）
+#define EXPO_CURVE    3   // expoカーブの鋭さ（EXPO_MAX>100のとき有効）
+#define EXPO_REF     40   // 「全速」とみなす1レポートあたりの移動量
 
-static uint16_t expo_lut[128];
+static uint32_t expo_lut[128];   // a×expoゲイン ×256（unityスケール）
+static int32_t  carry_x, carry_y;
 
 void keyboard_post_init_user(void) {
     for (uint16_t i = 0; i < 128; i++) {
         float t = (float)i / (float)EXPO_REF;
         if (t > 1.0f) t = 1.0f;
-        float gain = (float)EXPO_SENS + ((float)EXPO_MAX - (float)EXPO_SENS) * powf(t, (float)EXPO_CURVE);
-        expo_lut[i] = (uint16_t)((float)i * gain / 100.0f + 0.5f);
+        float gain = 100.0f + ((float)EXPO_MAX - 100.0f) * powf(t, (float)EXPO_CURVE);
+        expo_lut[i] = (uint32_t)((float)i * gain / 100.0f * 256.0f + 0.5f);
     }
 }
 
-static inline int16_t expo_apply(int16_t v) {
+static int16_t speed_axis(int16_t v, int32_t *carry) {
     int16_t a = v < 0 ? -v : v;
-    int32_t o = (a < 128) ? expo_lut[a] : ((int32_t)a * EXPO_MAX) / 100;
-    if (o > 32767) o = 32767;
-    return v < 0 ? (int16_t)-o : (int16_t)o;
+    int64_t base256 = (a < 128) ? (int64_t)expo_lut[a]
+                                : ((int64_t)a * EXPO_MAX * 256) / 100;
+    int32_t out256 = (int32_t)(base256 * SPEED_PCT / 100);   // 縮小係数を適用
+    if (v < 0) out256 = -out256;
+    *carry += out256;                       // 端数を蓄積
+    int16_t whole = (int16_t)(*carry / 256);
+    *carry -= (int32_t)whole * 256;         // 端数を次回へ持ち越し
+    return whole;
 }
 
 report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
-    if (!keyball_get_scroll_mode()) {        // スクロール中はカーブを適用しない
-        mouse_report.x = expo_apply(mouse_report.x);
-        mouse_report.y = expo_apply(mouse_report.y);
+    if (!keyball_get_scroll_mode()) {        // スクロール中は適用しない
+        mouse_report.x = speed_axis(mouse_report.x, &carry_x);
+        mouse_report.y = speed_axis(mouse_report.y, &carry_y);
     }
     return mouse_report;
 }
