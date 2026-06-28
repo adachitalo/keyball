@@ -50,9 +50,9 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 // 数字は全て感覚で調整可。変更したら再ビルドするだけ。
 #include <math.h>
 
-#define EXPO_SENS    85   // 低速時の倍率 ×100（<100=精密寄り, 100=等倍, >100=全体的に速く）
+#define EXPO_SENS    65   // 低速時の倍率 ×100（<100=精密寄り, 100=等倍, >100=全体的に速く）
 #define EXPO_MAX    230   // 高速時の最大倍率 ×100（フリック時のゲイン）
-#define EXPO_CURVE    2   // カーブの鋭さ（2=2乗/穏やか, 3=3乗/ドローンexpo風に中央がより鈍く）
+#define EXPO_CURVE    3   // カーブの鋭さ（2=2乗/穏やか, 3=3乗/ドローンexpo風に中央がより鈍く）
 #define EXPO_REF     36   // 「全速」とみなす1レポートあたりの移動量（小さいほど早く最大ゲインに達する）
 
 static uint16_t expo_lut[128];
