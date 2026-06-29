@@ -56,7 +56,7 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 // ※ floatは使わない（ATmega32U4はフラッシュが厳しいため整数のみで計算）。
 
 #define SPEED_PCT    25   // 速度係数(縮小率) ×100。低速の基準速度。下げると全体的に遅く=精密
-#define EXPO_MAX   2000   // 高速時のexpoゲイン ×100（実効最大 = SPEED_PCT×EXPO_MAX/100 = 0.25×20 = 5倍）
+#define EXPO_MAX   1200   // 高速時のexpoゲイン ×100（実効最大 = SPEED_PCT×EXPO_MAX/100 = 0.25×12 = 3倍。macOS加速ON前提で控えめ）
 #define EXPO_CURVE    2   // expoカーブの鋭さ（整数: 2=中盤が持ち上がる / 3=中央が鈍くexpo風）
 #define EXPO_REF     80   // 「全速」とみなす1レポートの移動量（小さいほど早く最大加速に到達）
 
